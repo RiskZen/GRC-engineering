@@ -20,7 +20,6 @@ st.set_page_config(
 conn = sqlite3.connect('grc_saas_v2.db', check_same_thread=False)
 c = conn.cursor()
 
-# Updated Schema: Added 'exception_reason' and removed pre-generated 'remediation_script'
 c.execute('''CREATE TABLE IF NOT EXISTS mappings 
              (control_id TEXT PRIMARY KEY, control_text TEXT, policy_text TEXT, ai_plan TEXT, 
               automation_script TEXT, 
@@ -38,11 +37,9 @@ st.markdown("""
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; color: #0f172a; }
     .stApp { background-color: #f8fafc; }
     
-    /* SIDEBAR */
     section[data-testid="stSidebar"] { background-color: #020617; border-right: 1px solid #1e293b; }
     section[data-testid="stSidebar"] * { color: #94a3b8 !important; font-weight: 500; }
     
-    /* LOGO & MENU */
     .sidebar-logo { color: white !important; font-size: 1.5rem; font-weight: 700; margin-bottom: 2rem; display: flex; align-items: center; gap: 10px; }
     .menu-header { color: #94a3b8; font-size: 13px; font-weight: 600; margin-top: 30px; margin-bottom: 10px; padding-left: 10px; }
     
@@ -51,22 +48,17 @@ st.markdown("""
     div[data-testid="stRadio"] label[data-checked="true"] { color: #ffffff !important; font-weight: 600; background-color: transparent; }
     div[data-testid="stRadio"] div[role="radiogroup"] > label > div:first-child { display: none; }
 
-    /* CARDS */
     .main-card { background-color: white; border-radius: 12px; padding: 25px; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05); border: 1px solid #e2e8f0; margin-bottom: 20px; }
     .metric-card { background-color: white; border-radius: 12px; padding: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; height: 140px; display: flex; flex-direction: column; justify-content: center; }
     .metric-value { font-size: 2.5rem; font-weight: 700; color: #0f172a; margin: 0; }
     .metric-label { font-size: 0.8rem; font-weight: 700; color: #64748b; text-transform: uppercase; margin-top: 5px; }
     
-    /* BADGES */
     .pass-badge { color: #166534; background: #dcfce7; padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; }
     .fail-badge { color: #991b1b; background: #fee2e2; padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; }
     .warn-badge { color: #854d0e; background: #fef9c3; padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; }
 
-    /* BUTTONS */
     .stButton>button { background-color: #2563eb; color: white; border-radius: 6px; border: none; font-weight: 600; padding: 0.5rem 1rem; }
     .stButton>button:hover { background-color: #1d4ed8; }
-    
-    /* EXCEPTION BOX */
     .exception-box { border-left: 5px solid #eab308; background-color: #fffbeb; padding: 15px; border-radius: 6px; }
 </style>
 """, unsafe_allow_html=True)
@@ -91,14 +83,12 @@ def call_gemini(prompt):
     except Exception as e: return f"Error: {e}"
 
 def db_save_mapping(cid, ctext, ptext, plan, script):
-    # We do NOT save remediation script here anymore. It's dynamic now.
     c.execute("INSERT OR REPLACE INTO mappings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
               (cid, ctext, ptext, plan, script, 'Untested', None, None, None))
     conn.commit()
 
 def db_update_audit(cid, status, result_text, filename):
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # If passing or failing normally, clear any previous exception
     c.execute("UPDATE mappings SET status = ?, last_result = ?, last_updated = ?, exception_reason = NULL WHERE control_id = ?",
               (status, result_text, ts, cid))
     c.execute("INSERT INTO audit_logs VALUES (?, ?, ?, ?, ?)", (ts, cid, filename, status, result_text))
@@ -106,7 +96,6 @@ def db_update_audit(cid, status, result_text, filename):
 
 def db_grant_exception(cid, justification):
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # Update status to Exception
     c.execute("UPDATE mappings SET status = 'EXCEPTION', last_updated = ?, exception_reason = ? WHERE control_id = ?",
               (ts, justification, cid))
     c.execute("INSERT INTO audit_logs VALUES (?, ?, ?, ?, ?)", (ts, cid, "Manual Override", "EXCEPTION", justification))
@@ -122,7 +111,7 @@ def db_get_control(cid):
 def db_get_history(cid):
     return pd.read_sql("SELECT timestamp, evidence_source, result, reason FROM audit_logs WHERE control_id = ? ORDER BY timestamp DESC", conn, params=(cid,))
 
-# --- 4. PAGE: DATA INGESTION ---
+# --- 4. PAGE: DATA INGESTION (UPDATED FOR ERROR HANDLING) ---
 def render_ingestion():
     st.markdown('<div style="color:#64748b; margin-bottom:5px;">Workspace / Data Ingestion</div>', unsafe_allow_html=True)
     st.title("Data Ingestion")
@@ -135,12 +124,23 @@ def render_ingestion():
     with c1:
         st.subheader("1. Internal Policies")
         f1 = st.file_uploader("Upload CSV", key="p", type=["csv"])
-        if f1: st.session_state['p_df'] = pd.read_csv(f1); st.success(f"Ready: {len(st.session_state['p_df'])} policies")
+        if f1: 
+            try:
+                # Use engine='python' for smarter parsing
+                st.session_state['p_df'] = pd.read_csv(f1, engine='python', on_bad_lines='warn')
+                st.success(f"Ready: {len(st.session_state['p_df'])} policies")
+            except Exception as e:
+                st.error(f"CSV Error: {e}. Try checking your file for unquoted commas.")
     
     with c2:
         st.subheader("2. Regulatory Controls")
         f2 = st.file_uploader("Upload CSV", key="u", type=["csv"])
-        if f2: st.session_state['u_df'] = pd.read_csv(f2); st.success(f"Ready: {len(st.session_state['u_df'])} controls")
+        if f2: 
+            try:
+                st.session_state['u_df'] = pd.read_csv(f2, engine='python', on_bad_lines='warn')
+                st.success(f"Ready: {len(st.session_state['u_df'])} controls")
+            except Exception as e:
+                st.error(f"CSV Error: {e}. Try checking your file for unquoted commas.")
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown("### 🚀 AI Core (GRC Engineering)")
@@ -154,6 +154,11 @@ def render_ingestion():
             embedder = load_embedding_model()
             p_df, u_df = st.session_state['p_df'], st.session_state['u_df']
             
+            # Ensure columns exist before encoding
+            if 'Policy_Text' not in p_df.columns or 'Control_Text' not in u_df.columns:
+                st.error("CSV Columns Invalid. Need 'Policy_Text' and 'Control_Text'.")
+                return
+
             p_emb = embedder.encode(p_df['Policy_Text'].head(5).astype(str).tolist(), convert_to_tensor=True)
             u_emb = embedder.encode(u_df['Control_Text'].head(5).astype(str).tolist(), convert_to_tensor=True)
             
@@ -169,7 +174,7 @@ def render_ingestion():
                 # 1. Audit Plan
                 plan = call_gemini(f"Role: Auditor. Control: {ctrl['Control_Text']}. Policy: {p_df.iloc[i]['Policy_Text']}. Task: Write concise test procedure.")
                 
-                # 2. Automation Script (Detection Only)
+                # 2. Automation Script
                 script = call_gemini(f"Role: DevOps Engineer. Write a Python Boto3 script to check this control: {ctrl['Control_Text']}. Return ONLY code.")
                 
                 db_save_mapping(ctrl['Control_ID'], ctrl['Control_Text'], p_df.iloc[i]['Policy_Text'], plan, script)
@@ -212,7 +217,7 @@ def render_engineering_hub():
                 st.caption("Auto-generated Python Boto3 script for Continuous Monitoring")
                 st.code(row['automation_script'], language='python')
 
-# --- 7. PAGE: AUDIT AGENTS (Dynamic Remediation + Exceptions) ---
+# --- 7. PAGE: AUDIT AGENTS ---
 def render_agents():
     st.markdown('<div style="color:#64748b; margin-bottom:5px;">Workspace / Audit Agents</div>', unsafe_allow_html=True)
     st.title("Audit Agents")
@@ -225,9 +230,7 @@ def render_agents():
     
     with c1:
         selected_id = st.selectbox("Select Control to Audit", df['control_id'])
-        # Fetch fresh data: 0:id, 1:text, 2:poly, 3:plan, 4:script, 5:status, 6:res, 7:upd, 8:exc_reason
         record = db_get_control(selected_id) 
-        
         st.info(f"**Req:** {record[1]}")
 
     with c2:
@@ -244,58 +247,37 @@ def render_agents():
                     db_update_audit(selected_id, status, res, f.name)
                     st.rerun()
     
-    # --- RESULT DISPLAY & EXCEPTION WORKFLOW ---
-    if record[5] != 'Untested': # Status
-        
-        # 1. SHOW RESULT
+    if record[5] != 'Untested':
         if record[5] == 'PASS':
             st.markdown(f"""<div style="margin-top:20px; padding:15px; border:1px solid #bbf7d0; background:#f0fdf4; border-radius:8px;">
                 <span class="pass-badge">PASS</span> <span style="margin-left:10px;">{record[6]}</span>
             </div>""", unsafe_allow_html=True)
-            
         elif record[5] == 'EXCEPTION':
-            st.markdown(f"""<div class="exception-box" style="margin-top:20px;">
-                <strong>🟡 EXCEPTION GRANTED</strong><br>
-                Reason: {record[8]}
-            </div>""", unsafe_allow_html=True)
-
+            st.markdown(f"""<div class="exception-box" style="margin-top:20px;"><strong>🟡 EXCEPTION GRANTED</strong><br>Reason: {record[8]}</div>""", unsafe_allow_html=True)
         elif record[5] == 'FAIL':
             st.markdown(f"""<div style="margin-top:20px; padding:15px; border:1px solid #fecaca; background:#fef2f2; border-radius:8px;">
                 <span class="fail-badge">FAIL</span> <span style="margin-left:10px;">{record[6]}</span>
             </div>""", unsafe_allow_html=True)
             
-            # --- DYNAMIC REMEDIATION & EXCEPTION (Only on Fail) ---
             st.write("---")
             col_fix, col_exc = st.columns(2)
-            
             with col_fix:
                 st.subheader("🛠️ Remediation Engineering")
                 if st.button("Generate Fix Code (Terraform/CLI)"):
                     with st.spinner("Generating IaC Fix..."):
-                        # Dynamic prompt using the specific error result
-                        fix_prompt = f"""
-                        Role: DevOps Engineer. 
-                        Context: Control '{record[1]}' FAILED.
-                        Error Detail: {record[6]}.
-                        Task: Write the CLI command or Terraform code to fix THIS specific error. Return ONLY code.
-                        """
-                        fix_code = call_gemini(fix_prompt)
+                        fix_code = call_gemini(f"Role: DevOps Engineer. Context: Control '{record[1]}' FAILED. Error: {record[6]}. Write CLI command or Terraform to fix. Return ONLY code.")
                         st.code(fix_code, language='bash')
-            
             with col_exc:
                 st.subheader("⚠️ Exception Management")
                 with st.expander("Grant Exception"):
-                    justification = st.text_area("Business Justification", placeholder="e.g., Legacy system, compensated by Firewall...")
+                    justification = st.text_area("Business Justification")
                     if st.button("Approve Exception"):
                         if justification:
                             db_grant_exception(selected_id, justification)
                             st.success("Exception Granted.")
                             st.rerun()
-                        else:
-                            st.error("Justification required.")
 
     st.markdown('</div>', unsafe_allow_html=True)
-
     st.markdown(f"### 📜 Audit History")
     history = db_get_history(selected_id)
     if not history.empty: st.dataframe(history, use_container_width=True)
@@ -308,14 +290,11 @@ def render_dashboard():
     df = db_get_mappings()
     if df.empty: st.info("No data available. Please go to Data Ingestion."); return
 
-    # Metrics
     total = len(df)
     passed = len(df[df['status'] == 'PASS'])
     failed = len(df[df['status'] == 'FAIL'])
     exceptions = len(df[df['status'] == 'EXCEPTION'])
     untested = len(df[df['status'] == 'Untested'])
-    
-    # Calculate Score (Exceptions are usually removed from denominator or counted as pass, here we treat them as neutral/pass)
     score_denominator = total - untested
     score = int(((passed + exceptions) / score_denominator) * 100) if score_denominator > 0 else 0
 
@@ -326,17 +305,15 @@ def render_dashboard():
     c1.markdown(metric_html(f"{score}%", "COMPLIANCE SCORE"), unsafe_allow_html=True)
     c2.markdown(metric_html(passed, "PASSING", "#22c55e"), unsafe_allow_html=True)
     c3.markdown(metric_html(failed, "FAILING", "#ef4444"), unsafe_allow_html=True)
-    c4.markdown(metric_html(exceptions, "EXCEPTIONS", "#eab308"), unsafe_allow_html=True)
+    c4.markdown(metric_html(untested, "UNTESTED", "#64748b"), unsafe_allow_html=True)
 
     st.write("")
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("### Control Status")
         st.markdown('<div class="main-card">', unsafe_allow_html=True)
-        chart_data = pd.DataFrame({'Status': ['Passing', 'Failing', 'Exception', 'Untested'], 
-                                   'Count': [passed, failed, exceptions, untested]})
-        fig = px.pie(chart_data, values='Count', names='Status', hole=0.5, 
-                     color='Status', 
+        chart_data = pd.DataFrame({'Status': ['Passing', 'Failing', 'Exception', 'Untested'], 'Count': [passed, failed, exceptions, untested]})
+        fig = px.pie(chart_data, values='Count', names='Status', hole=0.5, color='Status', 
                      color_discrete_map={'Passing':'#22c55e', 'Failing':'#ef4444', 'Exception':'#eab308', 'Untested':'#cbd5e1'})
         fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=250)
         st.plotly_chart(fig, use_container_width=True)
@@ -345,10 +322,7 @@ def render_dashboard():
     with col2:
         st.markdown("### Risk by Domain")
         st.markdown('<div class="main-card">', unsafe_allow_html=True)
-        domain_data = pd.DataFrame({
-            "Domain": ["Access", "Encryption", "Logging", "Network"],
-            "Risk": [10, 80, 20, 40]
-        })
+        domain_data = pd.DataFrame({"Domain": ["Access", "Encryption", "Logging", "Network"], "Risk": [10, 80, 20, 40]})
         fig2 = px.bar(domain_data, x="Domain", y="Risk", color="Risk", color_continuous_scale="Reds")
         fig2.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=250, showlegend=False)
         st.plotly_chart(fig2, use_container_width=True)
