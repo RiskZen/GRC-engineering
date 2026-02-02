@@ -30,7 +30,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS audit_logs
              (timestamp TEXT, control_id TEXT, evidence_source TEXT, result TEXT, reason TEXT)''')
 conn.commit()
 
-# --- 2. EXACT SIDEBAR CSS ---
+# --- 2. CSS STYLING ---
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -42,7 +42,7 @@ st.markdown("""
     section[data-testid="stSidebar"] { background-color: #020617; border-right: 1px solid #1e293b; }
     section[data-testid="stSidebar"] * { color: #94a3b8 !important; font-weight: 500; }
     
-    /* LOGO & MENU */
+    /* MENU & LOGO */
     .sidebar-logo { color: white !important; font-size: 1.5rem; font-weight: 700; margin-bottom: 2rem; display: flex; align-items: center; gap: 10px; }
     .menu-header { color: #94a3b8; font-size: 13px; font-weight: 600; margin-top: 30px; margin-bottom: 10px; padding-left: 10px; }
     
@@ -60,7 +60,6 @@ st.markdown("""
     /* BADGES */
     .pass-badge { color: #166534; background: #dcfce7; padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; }
     .fail-badge { color: #991b1b; background: #fee2e2; padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; }
-    .warn-badge { color: #854d0e; background: #fef9c3; padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; }
     .exception-box { border-left: 5px solid #eab308; background-color: #fffbeb; padding: 15px; border-radius: 6px; }
 
     /* BUTTONS */
@@ -77,26 +76,34 @@ def load_embedding_model():
 def call_gemini(prompt):
     # 1. Validation
     if "GOOGLE_API_KEY" not in st.secrets:
-        return "❌ Error: GOOGLE_API_KEY missing. Check secrets.toml (local) or Advanced Settings (Cloud)."
+        return "❌ Error: GOOGLE_API_KEY missing in secrets."
 
     try:
         # 2. Configure
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
         
-        # 3. Explicit Model Selection (Most Stable First)
-        # We try 1.5 Flash first because it handles larger JSON payloads best
-        try:
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            response = model.generate_content(prompt)
-            return response.text
-        except Exception as e1:
-            # Fallback to Pro if Flash fails
+        # 3. Model List (Try newest to oldest)
+        candidate_models = [
+            'gemini-1.5-flash', 
+            'gemini-1.5-flash-latest', 
+            'gemini-1.5-pro',
+            'gemini-pro'
+        ]
+        
+        last_error = ""
+        
+        for model_name in candidate_models:
             try:
-                model = genai.GenerativeModel('gemini-pro')
+                model = genai.GenerativeModel(model_name)
                 response = model.generate_content(prompt)
-                return response.text
-            except Exception as e2:
-                return f"❌ Google AI Error: {str(e1)}"
+                if response.text:
+                    return response.text
+            except Exception as e:
+                last_error = str(e)
+                continue # Try next model
+        
+        # If we get here, all models failed
+        return f"❌ API Error: {last_error}"
 
     except Exception as e:
         return f"❌ System Error: {str(e)}"
@@ -215,16 +222,10 @@ def render_engineering_hub():
 
     for i, row in df.iterrows():
         status_icon = "🟢" if row['status'] == 'PASS' else "🔴" if row['status'] == 'FAIL' else "🟡" if row['status'] == 'EXCEPTION' else "⚪"
-        # Display ID + Text in expander
         with st.expander(f"{status_icon} {row['control_id']} | {row['control_text'][:60]}..."):
-            
             t1, t2 = st.tabs(["📄 Audit Plan", "🐍 Automation (Python)"])
-            
-            with t1:
-                st.info(row['ai_plan'])
-            with t2:
-                st.caption("Auto-generated Python Boto3 script for Continuous Monitoring")
-                st.code(row['automation_script'], language='python')
+            with t1: st.info(row['ai_plan'])
+            with t2: st.code(row['automation_script'], language='python')
 
 # --- 7. PAGE: EVALUATION GUIDANCE ---
 def render_evaluation():
@@ -245,7 +246,7 @@ def render_evaluation():
             st.markdown("**🤖 AI Test Plan:**")
             st.info(row['ai_plan'])
 
-# --- 8. PAGE: AUDIT AGENTS (UPDATED WITH DEBUGGING) ---
+# --- 8. PAGE: AUDIT AGENTS (DEBUGGING) ---
 def render_agents():
     st.markdown('<div style="color:#64748b; margin-bottom:5px;">Workspace / Audit Agents</div>', unsafe_allow_html=True)
     st.title("Audit Agents")
@@ -257,7 +258,6 @@ def render_agents():
     c1, c2 = st.columns([1, 2])
     
     with c1:
-        # Improved Options List
         options = [f"{row['control_id']} | {row['control_text'][:50]}..." for idx, row in df.iterrows()]
         selected_option = st.selectbox("Select Control to Audit", options)
         selected_id = selected_option.split(" | ")[0]
@@ -270,19 +270,15 @@ def render_agents():
         
         if f:
             evidence = json.load(f)
-            
-            # Button to trigger AI
             if st.button("Run AI Audit"):
                 with st.spinner("Analyzing..."):
-                    # DEBUGGING: Print prompt size to console if running locally
                     prompt = f"Role: Auditor. Control: {record[1]}. Evidence: {json.dumps(evidence)}. Output: 'PASS' or 'FAIL' followed by 1 sentence reason."
                     
-                    # CALL THE UPDATED DEBUG FUNCTION
+                    # CALL AND CHECK RESULT
                     res = call_gemini(prompt)
                     
-                    # CHECK FOR ERRORS
                     if "Error" in res:
-                        st.error(res)
+                        st.error(res) # Show specific error
                     else:
                         status = "PASS" if "PASS" in res.upper() else "FAIL"
                         db_update_audit(selected_id, status, res, f.name)
@@ -346,7 +342,7 @@ def render_dashboard():
     c1.markdown(metric_html(f"{score}%", "COMPLIANCE SCORE"), unsafe_allow_html=True)
     c2.markdown(metric_html(passed, "PASSING", "#22c55e"), unsafe_allow_html=True)
     c3.markdown(metric_html(failed, "FAILING", "#ef4444"), unsafe_allow_html=True)
-    c4.markdown(metric_html(exceptions, "EXCEPTIONS", "#eab308"), unsafe_allow_html=True)
+    c4.markdown(metric_html(untested, "UNTESTED", "#64748b"), unsafe_allow_html=True)
 
     st.write("")
     col1, col2 = st.columns(2)
@@ -383,7 +379,7 @@ with st.sidebar:
     page = st.radio("Nav", ["Data Ingestion", "Control Mapping", "Engineering Hub", "Evaluation Guidance", "Audit Agents", "Dashboard"], label_visibility="collapsed")
     
     st.write("---")
-    st.caption("v5.0 (Verbose Error Handling)")
+    st.caption("v5.1 (Fixed Audit Dropdown)")
     if st.button("Reset DB"):
         c.execute("DELETE FROM mappings"); c.execute("DELETE FROM audit_logs"); conn.commit()
         st.rerun()
