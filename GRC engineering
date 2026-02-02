@@ -17,24 +17,24 @@ st.set_page_config(
 )
 
 # Initialize SQLite Database
-conn = sqlite3.connect('grc_saas.db', check_same_thread=False)
+conn = sqlite3.connect('grc_saas_v2.db', check_same_thread=False)
 c = conn.cursor()
 
-# Updated Schema to support GRC Engineering (Scripts)
+# Updated Schema: Added 'exception_reason' and removed pre-generated 'remediation_script'
 c.execute('''CREATE TABLE IF NOT EXISTS mappings 
              (control_id TEXT PRIMARY KEY, control_text TEXT, policy_text TEXT, ai_plan TEXT, 
-              automation_script TEXT, remediation_script TEXT,
-              status TEXT, last_result TEXT, last_updated TEXT)''')
+              automation_script TEXT, 
+              status TEXT, last_result TEXT, last_updated TEXT, exception_reason TEXT)''')
+
 c.execute('''CREATE TABLE IF NOT EXISTS audit_logs 
              (timestamp TEXT, control_id TEXT, evidence_source TEXT, result TEXT, reason TEXT)''')
 conn.commit()
 
-# --- 2. EXACT SIDEBAR CSS ---
+# --- 2. CSS STYLING ---
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     
-    /* GLOBAL RESET */
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; color: #0f172a; }
     .stApp { background-color: #f8fafc; }
     
@@ -42,7 +42,7 @@ st.markdown("""
     section[data-testid="stSidebar"] { background-color: #020617; border-right: 1px solid #1e293b; }
     section[data-testid="stSidebar"] * { color: #94a3b8 !important; font-weight: 500; }
     
-    /* MENU & LOGO */
+    /* LOGO & MENU */
     .sidebar-logo { color: white !important; font-size: 1.5rem; font-weight: 700; margin-bottom: 2rem; display: flex; align-items: center; gap: 10px; }
     .menu-header { color: #94a3b8; font-size: 13px; font-weight: 600; margin-top: 30px; margin-bottom: 10px; padding-left: 10px; }
     
@@ -60,13 +60,14 @@ st.markdown("""
     /* BADGES */
     .pass-badge { color: #166534; background: #dcfce7; padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; }
     .fail-badge { color: #991b1b; background: #fee2e2; padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; }
+    .warn-badge { color: #854d0e; background: #fef9c3; padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; }
 
     /* BUTTONS */
     .stButton>button { background-color: #2563eb; color: white; border-radius: 6px; border: none; font-weight: 600; padding: 0.5rem 1rem; }
     .stButton>button:hover { background-color: #1d4ed8; }
     
-    /* CODE BLOCK OVERRIDE */
-    .stCode { border-radius: 8px; border: 1px solid #e2e8f0; }
+    /* EXCEPTION BOX */
+    .exception-box { border-left: 5px solid #eab308; background-color: #fffbeb; padding: 15px; border-radius: 6px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -89,16 +90,26 @@ def call_gemini(prompt):
         return "Error: API Key missing."
     except Exception as e: return f"Error: {e}"
 
-def db_save_mapping(cid, ctext, ptext, plan, script, remediation):
+def db_save_mapping(cid, ctext, ptext, plan, script):
+    # We do NOT save remediation script here anymore. It's dynamic now.
     c.execute("INSERT OR REPLACE INTO mappings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-              (cid, ctext, ptext, plan, script, remediation, 'Untested', None, None))
+              (cid, ctext, ptext, plan, script, 'Untested', None, None, None))
     conn.commit()
 
 def db_update_audit(cid, status, result_text, filename):
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    c.execute("UPDATE mappings SET status = ?, last_result = ?, last_updated = ? WHERE control_id = ?",
+    # If passing or failing normally, clear any previous exception
+    c.execute("UPDATE mappings SET status = ?, last_result = ?, last_updated = ?, exception_reason = NULL WHERE control_id = ?",
               (status, result_text, ts, cid))
     c.execute("INSERT INTO audit_logs VALUES (?, ?, ?, ?, ?)", (ts, cid, filename, status, result_text))
+    conn.commit()
+
+def db_grant_exception(cid, justification):
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Update status to Exception
+    c.execute("UPDATE mappings SET status = 'EXCEPTION', last_updated = ?, exception_reason = ? WHERE control_id = ?",
+              (ts, justification, cid))
+    c.execute("INSERT INTO audit_logs VALUES (?, ?, ?, ?, ?)", (ts, cid, "Manual Override", "EXCEPTION", justification))
     conn.commit()
 
 def db_get_mappings():
@@ -146,7 +157,7 @@ def render_ingestion():
             p_emb = embedder.encode(p_df['Policy_Text'].head(5).astype(str).tolist(), convert_to_tensor=True)
             u_emb = embedder.encode(u_df['Control_Text'].head(5).astype(str).tolist(), convert_to_tensor=True)
             
-            st.write("Generating Compliance-as-Code Scripts...")
+            st.write("Generating Detection Scripts (Python)...")
             bar = st.progress(0)
             
             for i in range(len(p_df.head(5))):
@@ -155,18 +166,15 @@ def render_ingestion():
                 best_idx = torch.topk(scores, k=1)[1][0].item()
                 ctrl = u_df.iloc[best_idx]
                 
-                # 1. Audit Plan (English)
+                # 1. Audit Plan
                 plan = call_gemini(f"Role: Auditor. Control: {ctrl['Control_Text']}. Policy: {p_df.iloc[i]['Policy_Text']}. Task: Write concise test procedure.")
                 
-                # 2. Automation Script (Python/Boto3)
-                script = call_gemini(f"Role: DevOps Engineer. Write a Python Boto3 script to check this control: {ctrl['Control_Text']}. Return ONLY code, no text.")
+                # 2. Automation Script (Detection Only)
+                script = call_gemini(f"Role: DevOps Engineer. Write a Python Boto3 script to check this control: {ctrl['Control_Text']}. Return ONLY code.")
                 
-                # 3. Remediation Script (Terraform/CLI)
-                remediation = call_gemini(f"Role: DevOps Engineer. Write a CLI command or Terraform snippet to FIX/ENFORCE this control: {ctrl['Control_Text']}. Return ONLY code.")
-                
-                db_save_mapping(ctrl['Control_ID'], ctrl['Control_Text'], p_df.iloc[i]['Policy_Text'], plan, script, remediation)
+                db_save_mapping(ctrl['Control_ID'], ctrl['Control_Text'], p_df.iloc[i]['Policy_Text'], plan, script)
             
-            st.success("Mapping & Code Generation Complete!")
+            st.success("Mapping & Detection Code Generated!")
 
 # --- 5. PAGE: CONTROL MAPPING ---
 def render_mapping_view():
@@ -181,7 +189,7 @@ def render_mapping_view():
     st.dataframe(df[['control_id', 'control_text', 'policy_text']], use_container_width=True, hide_index=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 6. PAGE: ENGINEERING HUB (Renamed from Evaluation Guidance) ---
+# --- 6. PAGE: ENGINEERING HUB ---
 def render_engineering_hub():
     st.markdown('<div style="color:#64748b; margin-bottom:5px;">Workspace / Engineering Hub</div>', unsafe_allow_html=True)
     st.title("GRC Engineering Hub")
@@ -189,27 +197,22 @@ def render_engineering_hub():
     df = db_get_mappings()
     if df.empty: st.info("No mappings found."); return
 
-    st.markdown("This module transforms static requirements into **Compliance-as-Code** artifacts.")
+    st.markdown("This module contains **Compliance-as-Code** detection logic.")
     st.write("")
 
     for i, row in df.iterrows():
-        status_icon = "🟢" if row['status'] == 'PASS' else "🔴" if row['status'] == 'FAIL' else "⚪"
+        status_icon = "🟢" if row['status'] == 'PASS' else "🔴" if row['status'] == 'FAIL' else "🟡" if row['status'] == 'EXCEPTION' else "⚪"
         with st.expander(f"{status_icon} {row['control_id']} | {row['control_text'][:50]}..."):
             
-            t1, t2, t3 = st.tabs(["📄 Audit Plan", "🐍 Automation (Python)", "🛠️ Remediation (IaC)"])
+            t1, t2 = st.tabs(["📄 Audit Plan", "🐍 Automation (Python)"])
             
             with t1:
                 st.info(row['ai_plan'])
-            
             with t2:
                 st.caption("Auto-generated Python Boto3 script for Continuous Monitoring")
                 st.code(row['automation_script'], language='python')
-                
-            with t3:
-                st.caption("Auto-generated Infrastructure-as-Code to fix violations")
-                st.code(row['remediation_script'], language='bash')
 
-# --- 7. PAGE: AUDIT AGENTS (With Remediation) ---
+# --- 7. PAGE: AUDIT AGENTS (Dynamic Remediation + Exceptions) ---
 def render_agents():
     st.markdown('<div style="color:#64748b; margin-bottom:5px;">Workspace / Audit Agents</div>', unsafe_allow_html=True)
     st.title("Audit Agents")
@@ -222,9 +225,8 @@ def render_agents():
     
     with c1:
         selected_id = st.selectbox("Select Control to Audit", df['control_id'])
-        # Fetch fresh data including scripts
-        record = db_get_control(selected_id) # Returns tuple
-        # Tuple map: 0:id, 1:text, 2:poly, 3:plan, 4:script, 5:remediation, 6:status, 7:res, 8:upd
+        # Fetch fresh data: 0:id, 1:text, 2:poly, 3:plan, 4:script, 5:status, 6:res, 7:upd, 8:exc_reason
+        record = db_get_control(selected_id) 
         
         st.info(f"**Req:** {record[1]}")
 
@@ -242,17 +244,55 @@ def render_agents():
                     db_update_audit(selected_id, status, res, f.name)
                     st.rerun()
     
-    # RESULT DISPLAY
-    if record[6] != 'Untested': # Index 6 is status
-        badge_class = "pass-badge" if record[6] == 'PASS' else "fail-badge"
-        st.markdown(f"""<div style="margin-top:20px; padding:15px; border:1px solid #e2e8f0; border-radius:8px;">
-            <span class="{badge_class}">{record[6]}</span> <span style="margin-left:10px;">{record[7]}</span>
-        </div>""", unsafe_allow_html=True)
+    # --- RESULT DISPLAY & EXCEPTION WORKFLOW ---
+    if record[5] != 'Untested': # Status
         
-        # ENGINEERING FEATURE: Show Fix if Failed
-        if record[6] == 'FAIL':
-            st.error("🚨 Control Failed! Recommended Engineering Action:")
-            st.code(record[5], language='bash') # Index 5 is remediation_script
+        # 1. SHOW RESULT
+        if record[5] == 'PASS':
+            st.markdown(f"""<div style="margin-top:20px; padding:15px; border:1px solid #bbf7d0; background:#f0fdf4; border-radius:8px;">
+                <span class="pass-badge">PASS</span> <span style="margin-left:10px;">{record[6]}</span>
+            </div>""", unsafe_allow_html=True)
+            
+        elif record[5] == 'EXCEPTION':
+            st.markdown(f"""<div class="exception-box" style="margin-top:20px;">
+                <strong>🟡 EXCEPTION GRANTED</strong><br>
+                Reason: {record[8]}
+            </div>""", unsafe_allow_html=True)
+
+        elif record[5] == 'FAIL':
+            st.markdown(f"""<div style="margin-top:20px; padding:15px; border:1px solid #fecaca; background:#fef2f2; border-radius:8px;">
+                <span class="fail-badge">FAIL</span> <span style="margin-left:10px;">{record[6]}</span>
+            </div>""", unsafe_allow_html=True)
+            
+            # --- DYNAMIC REMEDIATION & EXCEPTION (Only on Fail) ---
+            st.write("---")
+            col_fix, col_exc = st.columns(2)
+            
+            with col_fix:
+                st.subheader("🛠️ Remediation Engineering")
+                if st.button("Generate Fix Code (Terraform/CLI)"):
+                    with st.spinner("Generating IaC Fix..."):
+                        # Dynamic prompt using the specific error result
+                        fix_prompt = f"""
+                        Role: DevOps Engineer. 
+                        Context: Control '{record[1]}' FAILED.
+                        Error Detail: {record[6]}.
+                        Task: Write the CLI command or Terraform code to fix THIS specific error. Return ONLY code.
+                        """
+                        fix_code = call_gemini(fix_prompt)
+                        st.code(fix_code, language='bash')
+            
+            with col_exc:
+                st.subheader("⚠️ Exception Management")
+                with st.expander("Grant Exception"):
+                    justification = st.text_area("Business Justification", placeholder="e.g., Legacy system, compensated by Firewall...")
+                    if st.button("Approve Exception"):
+                        if justification:
+                            db_grant_exception(selected_id, justification)
+                            st.success("Exception Granted.")
+                            st.rerun()
+                        else:
+                            st.error("Justification required.")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -268,11 +308,16 @@ def render_dashboard():
     df = db_get_mappings()
     if df.empty: st.info("No data available. Please go to Data Ingestion."); return
 
+    # Metrics
     total = len(df)
     passed = len(df[df['status'] == 'PASS'])
     failed = len(df[df['status'] == 'FAIL'])
+    exceptions = len(df[df['status'] == 'EXCEPTION'])
     untested = len(df[df['status'] == 'Untested'])
-    score = int((passed / total) * 100) if total > 0 else 0
+    
+    # Calculate Score (Exceptions are usually removed from denominator or counted as pass, here we treat them as neutral/pass)
+    score_denominator = total - untested
+    score = int(((passed + exceptions) / score_denominator) * 100) if score_denominator > 0 else 0
 
     c1, c2, c3, c4 = st.columns(4)
     def metric_html(val, lbl, color="#0f172a"):
@@ -281,15 +326,18 @@ def render_dashboard():
     c1.markdown(metric_html(f"{score}%", "COMPLIANCE SCORE"), unsafe_allow_html=True)
     c2.markdown(metric_html(passed, "PASSING", "#22c55e"), unsafe_allow_html=True)
     c3.markdown(metric_html(failed, "FAILING", "#ef4444"), unsafe_allow_html=True)
-    c4.markdown(metric_html(untested, "UNTESTED", "#64748b"), unsafe_allow_html=True)
+    c4.markdown(metric_html(exceptions, "EXCEPTIONS", "#eab308"), unsafe_allow_html=True)
 
     st.write("")
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("### Control Status")
         st.markdown('<div class="main-card">', unsafe_allow_html=True)
-        chart_data = pd.DataFrame({'Status': ['Passing', 'Failing', 'Untested'], 'Count': [passed, failed, untested]})
-        fig = px.pie(chart_data, values='Count', names='Status', hole=0.5, color='Status', color_discrete_map={'Passing':'#22c55e', 'Failing':'#ef4444', 'Untested':'#cbd5e1'})
+        chart_data = pd.DataFrame({'Status': ['Passing', 'Failing', 'Exception', 'Untested'], 
+                                   'Count': [passed, failed, exceptions, untested]})
+        fig = px.pie(chart_data, values='Count', names='Status', hole=0.5, 
+                     color='Status', 
+                     color_discrete_map={'Passing':'#22c55e', 'Failing':'#ef4444', 'Exception':'#eab308', 'Untested':'#cbd5e1'})
         fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=250)
         st.plotly_chart(fig, use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
@@ -297,7 +345,10 @@ def render_dashboard():
     with col2:
         st.markdown("### Risk by Domain")
         st.markdown('<div class="main-card">', unsafe_allow_html=True)
-        domain_data = pd.DataFrame({"Domain": ["Access", "Encryption", "Logging", "Network"], "Risk": [10, 80, 20, 40]})
+        domain_data = pd.DataFrame({
+            "Domain": ["Access", "Encryption", "Logging", "Network"],
+            "Risk": [10, 80, 20, 40]
+        })
         fig2 = px.bar(domain_data, x="Domain", y="Risk", color="Risk", color_continuous_scale="Reds")
         fig2.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=250, showlegend=False)
         st.plotly_chart(fig2, use_container_width=True)
@@ -316,7 +367,7 @@ with st.sidebar:
     page = st.radio("Nav", ["Dashboard", "Data Ingestion", "Control Mapping", "Engineering Hub", "Audit Agents"], label_visibility="collapsed")
     
     st.write("---")
-    st.caption("v4.0 (GRC Engineering Edition)")
+    st.caption("v4.5 (GRC Engineering + Exceptions)")
     if st.button("Reset DB"):
         c.execute("DELETE FROM mappings"); c.execute("DELETE FROM audit_logs"); conn.commit()
         st.rerun()
