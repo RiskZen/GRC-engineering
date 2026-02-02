@@ -20,7 +20,7 @@ st.set_page_config(
 conn = sqlite3.connect('grc_saas_v2.db', check_same_thread=False)
 c = conn.cursor()
 
-# Schema
+# Create Tables
 c.execute('''CREATE TABLE IF NOT EXISTS mappings 
              (control_id TEXT PRIMARY KEY, control_text TEXT, policy_text TEXT, ai_plan TEXT, 
               automation_script TEXT, 
@@ -42,7 +42,7 @@ st.markdown("""
     section[data-testid="stSidebar"] { background-color: #020617; border-right: 1px solid #1e293b; }
     section[data-testid="stSidebar"] * { color: #94a3b8 !important; font-weight: 500; }
     
-    /* LOGO & MENU */
+    /* MENU & LOGO */
     .sidebar-logo { color: white !important; font-size: 1.5rem; font-weight: 700; margin-bottom: 2rem; display: flex; align-items: center; gap: 10px; }
     .menu-header { color: #94a3b8; font-size: 13px; font-weight: 600; margin-top: 30px; margin-bottom: 10px; padding-left: 10px; }
     
@@ -60,6 +60,7 @@ st.markdown("""
     /* BADGES */
     .pass-badge { color: #166534; background: #dcfce7; padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; }
     .fail-badge { color: #991b1b; background: #fee2e2; padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; }
+    .warn-badge { color: #854d0e; background: #fef9c3; padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; }
     .exception-box { border-left: 5px solid #eab308; background-color: #fffbeb; padding: 15px; border-radius: 6px; }
 
     /* BUTTONS */
@@ -145,7 +146,7 @@ def render_ingestion():
             except Exception as e: st.error(f"CSV Error: {e}")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    st.markdown("### 🚀 AI Core")
+    st.markdown("### 🚀 AI Core (GRC Engineering)")
     if st.button("Run AI Semantic Mapping & Code Gen", use_container_width=True):
         if st.session_state['p_df'] is None or st.session_state['u_df'] is None:
             st.error("Please upload both CSV files first.")
@@ -159,7 +160,7 @@ def render_ingestion():
             p_emb = embedder.encode(p_df['Policy_Text'].head(5).astype(str).tolist(), convert_to_tensor=True)
             u_emb = embedder.encode(u_df['Control_Text'].head(5).astype(str).tolist(), convert_to_tensor=True)
             
-            st.write("Generating Detection Scripts...")
+            st.write("Generating Detection Scripts (Python)...")
             bar = st.progress(0)
             
             for i in range(len(p_df.head(5))):
@@ -169,13 +170,13 @@ def render_ingestion():
                 ctrl = u_df.iloc[best_idx]
                 
                 plan = call_gemini(f"Role: Auditor. Control: {ctrl['Control_Text']}. Policy: {p_df.iloc[i]['Policy_Text']}. Task: Write concise test procedure.")
-                script = call_gemini(f"Role: DevOps. Write a Python Boto3 script to check: {ctrl['Control_Text']}. Return ONLY code.")
+                script = call_gemini(f"Role: DevOps Engineer. Write a Python Boto3 script to check this control: {ctrl['Control_Text']}. Return ONLY code.")
                 
                 db_save_mapping(ctrl['Control_ID'], ctrl['Control_Text'], p_df.iloc[i]['Policy_Text'], plan, script)
             
-            st.success("Mapping Complete!")
+            st.success("Mapping & Detection Code Generated!")
 
-# --- 5. PAGE: CONTROL MAPPING (Improved Table) ---
+# --- 5. PAGE: CONTROL MAPPING ---
 def render_mapping_view():
     st.markdown('<div style="color:#64748b; margin-bottom:5px;">Workspace / Control Mapping</div>', unsafe_allow_html=True)
     st.title("Control Mapping View")
@@ -185,19 +186,7 @@ def render_mapping_view():
 
     st.markdown('<div class="main-card">', unsafe_allow_html=True)
     st.subheader(f"Mapped Relationships ({len(df)} Controls)")
-    st.write("Alignment between Regulatory Framework and Internal Policy:")
-    
-    # Configure Columns for better readability (wrapping text)
-    st.dataframe(
-        df[['control_id', 'control_text', 'policy_text']], 
-        use_container_width=True, 
-        hide_index=True,
-        column_config={
-            "control_id": st.column_config.TextColumn("ID", width="small"),
-            "control_text": st.column_config.TextColumn("Regulatory Control", width="medium"),
-            "policy_text": st.column_config.TextColumn("Mapped Internal Policy", width="medium")
-        }
-    )
+    st.dataframe(df[['control_id', 'control_text', 'policy_text']], use_container_width=True, hide_index=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
 # --- 6. PAGE: ENGINEERING HUB ---
@@ -208,17 +197,43 @@ def render_engineering_hub():
     df = db_get_mappings()
     if df.empty: st.info("No mappings found."); return
 
-    st.markdown("Compliance-as-Code Artifacts:")
+    st.markdown("This module contains **Compliance-as-Code** detection logic.")
     st.write("")
 
     for i, row in df.iterrows():
         status_icon = "🟢" if row['status'] == 'PASS' else "🔴" if row['status'] == 'FAIL' else "🟡" if row['status'] == 'EXCEPTION' else "⚪"
+        # --- FIXED: Show Control Text in Expander Title ---
         with st.expander(f"{status_icon} {row['control_id']} | {row['control_text'][:60]}..."):
+            
             t1, t2 = st.tabs(["📄 Audit Plan", "🐍 Automation (Python)"])
-            with t1: st.info(row['ai_plan'])
-            with t2: st.code(row['automation_script'], language='python')
+            
+            with t1:
+                st.info(row['ai_plan'])
+            with t2:
+                st.caption("Auto-generated Python Boto3 script for Continuous Monitoring")
+                st.code(row['automation_script'], language='python')
 
-# --- 7. PAGE: AUDIT AGENTS (Improved Selection) ---
+# --- 7. PAGE: EVALUATION GUIDANCE (Same fix applied) ---
+def render_evaluation():
+    st.markdown('<div style="color:#64748b; margin-bottom:5px;">Workspace / Evaluation Guidance</div>', unsafe_allow_html=True)
+    st.title("Evaluation Guidance")
+    
+    df = db_get_mappings()
+    if df.empty: st.info("No mappings found."); return
+
+    st.markdown(f"**Total Controls:** {len(df)}")
+    
+    for i, row in df.iterrows():
+        status_icon = "🟢" if row['status'] == 'PASS' else "🔴" if row['status'] == 'FAIL' else "⚪"
+        # --- FIXED: Show Control Text in Header ---
+        with st.expander(f"{status_icon} {row['control_id']} | {row['control_text'][:50]}... (Status: {row['status']})"):
+            st.markdown(f"**Control:** {row['control_text']}")
+            st.markdown(f"**Policy:** {row['policy_text']}")
+            st.divider()
+            st.markdown("**🤖 AI Test Plan:**")
+            st.info(row['ai_plan'])
+
+# --- 8. PAGE: AUDIT AGENTS (Fixed Selection Dropdown) ---
 def render_agents():
     st.markdown('<div style="color:#64748b; margin-bottom:5px;">Workspace / Audit Agents</div>', unsafe_allow_html=True)
     st.title("Audit Agents")
@@ -230,19 +245,20 @@ def render_agents():
     c1, c2 = st.columns([1, 2])
     
     with c1:
-        # --- MODIFICATION: Dropdown shows ID + Text ---
-        # Create list of strings: "ID | Text..."
-        options = [f"{row['control_id']} | {row['control_text'][:50]}..." for idx, row in df.iterrows()]
-        selected_option = st.selectbox("Select Control to Audit", options)
+        # --- FIXED: Dropdown shows ID + Description ---
+        # Create a list like "AC-02 | Account Management..."
+        control_options = [f"{row['control_id']} | {row['control_text'][:50]}..." for idx, row in df.iterrows()]
         
-        # Extract ID from selection
-        selected_id = selected_option.split(" | ")[0]
+        selection = st.selectbox("Select Control to Audit", control_options)
         
-        # Fetch fresh data
+        # Parse the ID back out
+        selected_id = selection.split(" | ")[0]
+        
+        # Fetch fresh data using the ID
         record = db_get_control(selected_id) 
-        # tuple index: 0:id, 1:text, 2:poly, 3:plan, 4:script, 5:status, 6:res, 7:upd, 8:exc
+        # Tuple index reminder: 0:id, 1:text, 2:poly, 3:plan, 4:script, 5:status, 6:res, 7:upd, 8:exc
         
-        st.info(f"**Requirement:** {record[1]}")
+        st.info(f"**Req:** {record[1]}")
 
     with c2:
         st.subheader("📡 Evidence Connector")
@@ -258,7 +274,8 @@ def render_agents():
                     db_update_audit(selected_id, status, res, f.name)
                     st.rerun()
     
-    if record[5] != 'Untested': 
+    # RESULT DISPLAY
+    if record[5] != 'Untested':
         if record[5] == 'PASS':
             st.markdown(f"""<div style="margin-top:20px; padding:15px; border:1px solid #bbf7d0; background:#f0fdf4; border-radius:8px;">
                 <span class="pass-badge">PASS</span> <span style="margin-left:10px;">{record[6]}</span>
@@ -273,27 +290,28 @@ def render_agents():
             st.write("---")
             col_fix, col_exc = st.columns(2)
             with col_fix:
-                st.subheader("🛠️ Remediation")
-                if st.button("Generate Fix Code"):
+                st.subheader("🛠️ Remediation Engineering")
+                if st.button("Generate Fix Code (Terraform/CLI)"):
                     with st.spinner("Generating IaC Fix..."):
-                        fix_code = call_gemini(f"Role: DevOps. Context: Control '{record[1]}' FAILED. Error: {record[6]}. Write CLI/Terraform to fix. Return ONLY code.")
+                        fix_code = call_gemini(f"Role: DevOps Engineer. Context: Control '{record[1]}' FAILED. Error: {record[6]}. Write CLI command or Terraform to fix. Return ONLY code.")
                         st.code(fix_code, language='bash')
             with col_exc:
-                st.subheader("⚠️ Exception")
+                st.subheader("⚠️ Exception Management")
                 with st.expander("Grant Exception"):
-                    justification = st.text_area("Justification")
-                    if st.button("Approve"):
+                    justification = st.text_area("Business Justification")
+                    if st.button("Approve Exception"):
                         if justification:
                             db_grant_exception(selected_id, justification)
-                            st.success("Granted.")
+                            st.success("Exception Granted.")
                             st.rerun()
 
     st.markdown('</div>', unsafe_allow_html=True)
+
     st.markdown(f"### 📜 Audit History")
     history = db_get_history(selected_id)
     if not history.empty: st.dataframe(history, use_container_width=True)
 
-# --- 8. PAGE: DASHBOARD ---
+# --- 9. PAGE: DASHBOARD ---
 def render_dashboard():
     st.markdown('<div class="breadcrumb">Workspace / Dashboard</div>', unsafe_allow_html=True)
     st.markdown('<h1 style="color:#0f172a; font-weight:800; margin-bottom:20px;">Executive Dashboard</h1>', unsafe_allow_html=True)
@@ -301,6 +319,7 @@ def render_dashboard():
     df = db_get_mappings()
     if df.empty: st.info("No data available. Please go to Data Ingestion."); return
 
+    # Metrics
     total = len(df)
     passed = len(df[df['status'] == 'PASS'])
     failed = len(df[df['status'] == 'FAIL'])
@@ -316,7 +335,7 @@ def render_dashboard():
     c1.markdown(metric_html(f"{score}%", "COMPLIANCE SCORE"), unsafe_allow_html=True)
     c2.markdown(metric_html(passed, "PASSING", "#22c55e"), unsafe_allow_html=True)
     c3.markdown(metric_html(failed, "FAILING", "#ef4444"), unsafe_allow_html=True)
-    c4.markdown(metric_html(exceptions, "EXCEPTIONS", "#eab308"), unsafe_allow_html=True)
+    c4.markdown(metric_html(untested, "UNTESTED", "#64748b"), unsafe_allow_html=True)
 
     st.write("")
     col1, col2 = st.columns(2)
@@ -340,7 +359,7 @@ def render_dashboard():
         st.plotly_chart(fig2, use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 9. SIDEBAR NAVIGATION ---
+# --- 10. SIDEBAR NAVIGATION ---
 with st.sidebar:
     st.markdown("""
     <div class="logo-container">
@@ -350,17 +369,18 @@ with st.sidebar:
     <div class="menu-header">Menu</div>
     """, unsafe_allow_html=True)
     
-    page = st.radio("Nav", ["Dashboard", "Data Ingestion", "Control Mapping", "Engineering Hub", "Audit Agents"], label_visibility="collapsed")
+    page = st.radio("Nav", ["Dashboard", "Data Ingestion", "Control Mapping", "Engineering Hub", "Evaluation Guidance", "Audit Agents"], label_visibility="collapsed")
     
     st.write("---")
-    st.caption("v4.6 (Visual Upgrade)")
+    st.caption("v4.7 (UI Polish)")
     if st.button("Reset DB"):
         c.execute("DELETE FROM mappings"); c.execute("DELETE FROM audit_logs"); conn.commit()
         st.rerun()
 
-# --- 10. ROUTING ---
+# --- 11. ROUTING ---
 if page == "Dashboard": render_dashboard()
 elif page == "Data Ingestion": render_ingestion()
 elif page == "Control Mapping": render_mapping_view()
 elif page == "Engineering Hub": render_engineering_hub()
+elif page == "Evaluation Guidance": render_evaluation()
 elif page == "Audit Agents": render_agents()
