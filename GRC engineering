@@ -20,6 +20,7 @@ st.set_page_config(
 conn = sqlite3.connect('grc_saas_v2.db', check_same_thread=False)
 c = conn.cursor()
 
+# Schema
 c.execute('''CREATE TABLE IF NOT EXISTS mappings 
              (control_id TEXT PRIMARY KEY, control_text TEXT, policy_text TEXT, ai_plan TEXT, 
               automation_script TEXT, 
@@ -37,9 +38,11 @@ st.markdown("""
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; color: #0f172a; }
     .stApp { background-color: #f8fafc; }
     
+    /* SIDEBAR */
     section[data-testid="stSidebar"] { background-color: #020617; border-right: 1px solid #1e293b; }
     section[data-testid="stSidebar"] * { color: #94a3b8 !important; font-weight: 500; }
     
+    /* LOGO & MENU */
     .sidebar-logo { color: white !important; font-size: 1.5rem; font-weight: 700; margin-bottom: 2rem; display: flex; align-items: center; gap: 10px; }
     .menu-header { color: #94a3b8; font-size: 13px; font-weight: 600; margin-top: 30px; margin-bottom: 10px; padding-left: 10px; }
     
@@ -48,18 +51,20 @@ st.markdown("""
     div[data-testid="stRadio"] label[data-checked="true"] { color: #ffffff !important; font-weight: 600; background-color: transparent; }
     div[data-testid="stRadio"] div[role="radiogroup"] > label > div:first-child { display: none; }
 
+    /* CARDS */
     .main-card { background-color: white; border-radius: 12px; padding: 25px; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05); border: 1px solid #e2e8f0; margin-bottom: 20px; }
     .metric-card { background-color: white; border-radius: 12px; padding: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; height: 140px; display: flex; flex-direction: column; justify-content: center; }
     .metric-value { font-size: 2.5rem; font-weight: 700; color: #0f172a; margin: 0; }
     .metric-label { font-size: 0.8rem; font-weight: 700; color: #64748b; text-transform: uppercase; margin-top: 5px; }
     
+    /* BADGES */
     .pass-badge { color: #166534; background: #dcfce7; padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; }
     .fail-badge { color: #991b1b; background: #fee2e2; padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; }
-    .warn-badge { color: #854d0e; background: #fef9c3; padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; }
+    .exception-box { border-left: 5px solid #eab308; background-color: #fffbeb; padding: 15px; border-radius: 6px; }
 
+    /* BUTTONS */
     .stButton>button { background-color: #2563eb; color: white; border-radius: 6px; border: none; font-weight: 600; padding: 0.5rem 1rem; }
     .stButton>button:hover { background-color: #1d4ed8; }
-    .exception-box { border-left: 5px solid #eab308; background-color: #fffbeb; padding: 15px; border-radius: 6px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -111,7 +116,7 @@ def db_get_control(cid):
 def db_get_history(cid):
     return pd.read_sql("SELECT timestamp, evidence_source, result, reason FROM audit_logs WHERE control_id = ? ORDER BY timestamp DESC", conn, params=(cid,))
 
-# --- 4. PAGE: DATA INGESTION (UPDATED FOR ERROR HANDLING) ---
+# --- 4. PAGE: DATA INGESTION ---
 def render_ingestion():
     st.markdown('<div style="color:#64748b; margin-bottom:5px;">Workspace / Data Ingestion</div>', unsafe_allow_html=True)
     st.title("Data Ingestion")
@@ -126,11 +131,9 @@ def render_ingestion():
         f1 = st.file_uploader("Upload CSV", key="p", type=["csv"])
         if f1: 
             try:
-                # Use engine='python' for smarter parsing
                 st.session_state['p_df'] = pd.read_csv(f1, engine='python', on_bad_lines='warn')
                 st.success(f"Ready: {len(st.session_state['p_df'])} policies")
-            except Exception as e:
-                st.error(f"CSV Error: {e}. Try checking your file for unquoted commas.")
+            except Exception as e: st.error(f"CSV Error: {e}")
     
     with c2:
         st.subheader("2. Regulatory Controls")
@@ -139,11 +142,10 @@ def render_ingestion():
             try:
                 st.session_state['u_df'] = pd.read_csv(f2, engine='python', on_bad_lines='warn')
                 st.success(f"Ready: {len(st.session_state['u_df'])} controls")
-            except Exception as e:
-                st.error(f"CSV Error: {e}. Try checking your file for unquoted commas.")
+            except Exception as e: st.error(f"CSV Error: {e}")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    st.markdown("### 🚀 AI Core (GRC Engineering)")
+    st.markdown("### 🚀 AI Core")
     if st.button("Run AI Semantic Mapping & Code Gen", use_container_width=True):
         if st.session_state['p_df'] is None or st.session_state['u_df'] is None:
             st.error("Please upload both CSV files first.")
@@ -154,15 +156,10 @@ def render_ingestion():
             embedder = load_embedding_model()
             p_df, u_df = st.session_state['p_df'], st.session_state['u_df']
             
-            # Ensure columns exist before encoding
-            if 'Policy_Text' not in p_df.columns or 'Control_Text' not in u_df.columns:
-                st.error("CSV Columns Invalid. Need 'Policy_Text' and 'Control_Text'.")
-                return
-
             p_emb = embedder.encode(p_df['Policy_Text'].head(5).astype(str).tolist(), convert_to_tensor=True)
             u_emb = embedder.encode(u_df['Control_Text'].head(5).astype(str).tolist(), convert_to_tensor=True)
             
-            st.write("Generating Detection Scripts (Python)...")
+            st.write("Generating Detection Scripts...")
             bar = st.progress(0)
             
             for i in range(len(p_df.head(5))):
@@ -171,17 +168,14 @@ def render_ingestion():
                 best_idx = torch.topk(scores, k=1)[1][0].item()
                 ctrl = u_df.iloc[best_idx]
                 
-                # 1. Audit Plan
                 plan = call_gemini(f"Role: Auditor. Control: {ctrl['Control_Text']}. Policy: {p_df.iloc[i]['Policy_Text']}. Task: Write concise test procedure.")
-                
-                # 2. Automation Script
-                script = call_gemini(f"Role: DevOps Engineer. Write a Python Boto3 script to check this control: {ctrl['Control_Text']}. Return ONLY code.")
+                script = call_gemini(f"Role: DevOps. Write a Python Boto3 script to check: {ctrl['Control_Text']}. Return ONLY code.")
                 
                 db_save_mapping(ctrl['Control_ID'], ctrl['Control_Text'], p_df.iloc[i]['Policy_Text'], plan, script)
             
-            st.success("Mapping & Detection Code Generated!")
+            st.success("Mapping Complete!")
 
-# --- 5. PAGE: CONTROL MAPPING ---
+# --- 5. PAGE: CONTROL MAPPING (Improved Table) ---
 def render_mapping_view():
     st.markdown('<div style="color:#64748b; margin-bottom:5px;">Workspace / Control Mapping</div>', unsafe_allow_html=True)
     st.title("Control Mapping View")
@@ -191,7 +185,19 @@ def render_mapping_view():
 
     st.markdown('<div class="main-card">', unsafe_allow_html=True)
     st.subheader(f"Mapped Relationships ({len(df)} Controls)")
-    st.dataframe(df[['control_id', 'control_text', 'policy_text']], use_container_width=True, hide_index=True)
+    st.write("Alignment between Regulatory Framework and Internal Policy:")
+    
+    # Configure Columns for better readability (wrapping text)
+    st.dataframe(
+        df[['control_id', 'control_text', 'policy_text']], 
+        use_container_width=True, 
+        hide_index=True,
+        column_config={
+            "control_id": st.column_config.TextColumn("ID", width="small"),
+            "control_text": st.column_config.TextColumn("Regulatory Control", width="medium"),
+            "policy_text": st.column_config.TextColumn("Mapped Internal Policy", width="medium")
+        }
+    )
     st.markdown('</div>', unsafe_allow_html=True)
 
 # --- 6. PAGE: ENGINEERING HUB ---
@@ -202,22 +208,17 @@ def render_engineering_hub():
     df = db_get_mappings()
     if df.empty: st.info("No mappings found."); return
 
-    st.markdown("This module contains **Compliance-as-Code** detection logic.")
+    st.markdown("Compliance-as-Code Artifacts:")
     st.write("")
 
     for i, row in df.iterrows():
         status_icon = "🟢" if row['status'] == 'PASS' else "🔴" if row['status'] == 'FAIL' else "🟡" if row['status'] == 'EXCEPTION' else "⚪"
-        with st.expander(f"{status_icon} {row['control_id']} | {row['control_text'][:50]}..."):
-            
+        with st.expander(f"{status_icon} {row['control_id']} | {row['control_text'][:60]}..."):
             t1, t2 = st.tabs(["📄 Audit Plan", "🐍 Automation (Python)"])
-            
-            with t1:
-                st.info(row['ai_plan'])
-            with t2:
-                st.caption("Auto-generated Python Boto3 script for Continuous Monitoring")
-                st.code(row['automation_script'], language='python')
+            with t1: st.info(row['ai_plan'])
+            with t2: st.code(row['automation_script'], language='python')
 
-# --- 7. PAGE: AUDIT AGENTS ---
+# --- 7. PAGE: AUDIT AGENTS (Improved Selection) ---
 def render_agents():
     st.markdown('<div style="color:#64748b; margin-bottom:5px;">Workspace / Audit Agents</div>', unsafe_allow_html=True)
     st.title("Audit Agents")
@@ -229,9 +230,19 @@ def render_agents():
     c1, c2 = st.columns([1, 2])
     
     with c1:
-        selected_id = st.selectbox("Select Control to Audit", df['control_id'])
+        # --- MODIFICATION: Dropdown shows ID + Text ---
+        # Create list of strings: "ID | Text..."
+        options = [f"{row['control_id']} | {row['control_text'][:50]}..." for idx, row in df.iterrows()]
+        selected_option = st.selectbox("Select Control to Audit", options)
+        
+        # Extract ID from selection
+        selected_id = selected_option.split(" | ")[0]
+        
+        # Fetch fresh data
         record = db_get_control(selected_id) 
-        st.info(f"**Req:** {record[1]}")
+        # tuple index: 0:id, 1:text, 2:poly, 3:plan, 4:script, 5:status, 6:res, 7:upd, 8:exc
+        
+        st.info(f"**Requirement:** {record[1]}")
 
     with c2:
         st.subheader("📡 Evidence Connector")
@@ -247,7 +258,7 @@ def render_agents():
                     db_update_audit(selected_id, status, res, f.name)
                     st.rerun()
     
-    if record[5] != 'Untested':
+    if record[5] != 'Untested': 
         if record[5] == 'PASS':
             st.markdown(f"""<div style="margin-top:20px; padding:15px; border:1px solid #bbf7d0; background:#f0fdf4; border-radius:8px;">
                 <span class="pass-badge">PASS</span> <span style="margin-left:10px;">{record[6]}</span>
@@ -262,19 +273,19 @@ def render_agents():
             st.write("---")
             col_fix, col_exc = st.columns(2)
             with col_fix:
-                st.subheader("🛠️ Remediation Engineering")
-                if st.button("Generate Fix Code (Terraform/CLI)"):
+                st.subheader("🛠️ Remediation")
+                if st.button("Generate Fix Code"):
                     with st.spinner("Generating IaC Fix..."):
-                        fix_code = call_gemini(f"Role: DevOps Engineer. Context: Control '{record[1]}' FAILED. Error: {record[6]}. Write CLI command or Terraform to fix. Return ONLY code.")
+                        fix_code = call_gemini(f"Role: DevOps. Context: Control '{record[1]}' FAILED. Error: {record[6]}. Write CLI/Terraform to fix. Return ONLY code.")
                         st.code(fix_code, language='bash')
             with col_exc:
-                st.subheader("⚠️ Exception Management")
+                st.subheader("⚠️ Exception")
                 with st.expander("Grant Exception"):
-                    justification = st.text_area("Business Justification")
-                    if st.button("Approve Exception"):
+                    justification = st.text_area("Justification")
+                    if st.button("Approve"):
                         if justification:
                             db_grant_exception(selected_id, justification)
-                            st.success("Exception Granted.")
+                            st.success("Granted.")
                             st.rerun()
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -305,7 +316,7 @@ def render_dashboard():
     c1.markdown(metric_html(f"{score}%", "COMPLIANCE SCORE"), unsafe_allow_html=True)
     c2.markdown(metric_html(passed, "PASSING", "#22c55e"), unsafe_allow_html=True)
     c3.markdown(metric_html(failed, "FAILING", "#ef4444"), unsafe_allow_html=True)
-    c4.markdown(metric_html(untested, "UNTESTED", "#64748b"), unsafe_allow_html=True)
+    c4.markdown(metric_html(exceptions, "EXCEPTIONS", "#eab308"), unsafe_allow_html=True)
 
     st.write("")
     col1, col2 = st.columns(2)
@@ -313,7 +324,8 @@ def render_dashboard():
         st.markdown("### Control Status")
         st.markdown('<div class="main-card">', unsafe_allow_html=True)
         chart_data = pd.DataFrame({'Status': ['Passing', 'Failing', 'Exception', 'Untested'], 'Count': [passed, failed, exceptions, untested]})
-        fig = px.pie(chart_data, values='Count', names='Status', hole=0.5, color='Status', 
+        fig = px.pie(chart_data, values='Count', names='Status', hole=0.5, 
+                     color='Status', 
                      color_discrete_map={'Passing':'#22c55e', 'Failing':'#ef4444', 'Exception':'#eab308', 'Untested':'#cbd5e1'})
         fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=250)
         st.plotly_chart(fig, use_container_width=True)
@@ -341,7 +353,7 @@ with st.sidebar:
     page = st.radio("Nav", ["Dashboard", "Data Ingestion", "Control Mapping", "Engineering Hub", "Audit Agents"], label_visibility="collapsed")
     
     st.write("---")
-    st.caption("v4.5 (GRC Engineering + Exceptions)")
+    st.caption("v4.6 (Visual Upgrade)")
     if st.button("Reset DB"):
         c.execute("DELETE FROM mappings"); c.execute("DELETE FROM audit_logs"); conn.commit()
         st.rerun()
